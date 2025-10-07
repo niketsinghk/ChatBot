@@ -1,0 +1,242 @@
+<!-- =========================
+     HCA Assistant – Chat Bubble (Markdown-enabled)
+     ========================= -->
+<div id="hca-chat-root"></div>
+<script>
+(() => {
+  /* ---------- ICONS (index.html in /public; images in /images) ---------- */
+  const ICON_BASE = new URL('../images/', document.baseURI);
+  const BOT_ICON  = (window.HCA_BOT_ICON  ?? new URL('icon.png',    ICON_BASE).href);
+  const USER_ICON = (window.HCA_USER_ICON ?? new URL('message.png', ICON_BASE).href);
+  const BASE_ICON = (window.HCA_BASE_ICON ?? BOT_ICON);
+
+  /* ---------- API CONFIG ---------- */
+  const API_BASE = window.HCA_API_BASE || "";         // e.g. "http://localhost:5173"
+  const API_URL  = `${API_BASE}/api/ask`;             // POST endpoint
+  const HEALTH   = `${API_BASE}/api/health`;          // optional GET
+
+  /* ---------- UI ---------- */
+  const root = document.getElementById("hca-chat-root");
+  root.innerHTML = `
+  <style>
+    :root{
+      --hca-blue:#2563eb; --hca-blue-2:#7aa2ff; --hca-bg:#fff;
+      --hca-dark:#0f172a; --hca-muted:#6b7280; --hca-radius:16px;
+    }
+    .hca-fab{
+      position:fixed; right:18px; bottom:18px; width:58px; height:58px; border-radius:50%;
+      background:linear-gradient(135deg,var(--hca-blue),var(--hca-blue-2));
+      color:#fff; display:flex; align-items:center; justify-content:center;
+      box-shadow:0 12px 32px rgba(0,0,0,.18); cursor:pointer; z-index:9999;
+    }
+    .hca-fab img{ width:28px; height:28px; filter:invert(1) brightness(10); }
+
+    .hca-panel{
+      position:fixed; right:18px; bottom:88px; width:360px; max-height:70vh;
+      background:#fff; border-radius:18px; box-shadow:0 24px 60px rgba(0,0,0,.20);
+      display:none; flex-direction:column; overflow:hidden; z-index:10000;
+    }
+    .hca-panel.open{ display:flex; }
+    .hca-head{
+      height:56px; background:#5b82ff; color:#fff; display:flex; align-items:center; justify-content:space-between; padding:0 12px;
+    }
+    .hca-head-left{ display:flex; align-items:center; gap:8px; font-weight:700; }
+    .hca-head-left img{ width:22px; height:22px; background:#fff; border-radius:6px; padding:2px; }
+    .hca-head button{
+      background:transparent; border:0; color:#fff; width:32px; height:32px; border-radius:8px; cursor:pointer; font-size:16px;
+    }
+    .hca-body{ padding:14px; background:#f5f7fb; overflow:auto; height:360px; }
+    .hca-msg{ display:flex; gap:8px; margin:8px 0; }
+    .hca-msg.bot{ justify-content:flex-start; }
+    .hca-msg.user{ justify-content:flex-end; }
+    .hca-avatar{ width:24px; height:24px; border-radius:50%; overflow:hidden; flex:0 0 24px; }
+    .hca-avatar img{ width:100%; height:100%; object-fit:cover; }
+    .hca-bubble{
+      max-width:78%; padding:10px 12px; border-radius:12px; line-height:1.45;
+      background:#fff; color:#111827; box-shadow:0 2px 8px rgba(0,0,0,.06);
+      font-size:14px;
+    }
+    .hca-bubble strong{ font-weight:700; }
+    .hca-bubble em{ font-style:italic; }
+    .hca-bubble code{ font-family:ui-monospace, SFMono-Regular, Menlo, monospace; background:#f0f2f6; padding:0 4px; border-radius:4px; }
+    .hca-bubble ul{ padding-left:18px; margin:6px 0; }
+    .hca-msg.user .hca-bubble{
+      background:#2563eb; color:#fff;
+      border-top-right-radius:6px; border-top-left-radius:14px;
+    }
+    .hca-msg.bot  .hca-bubble{
+      border-top-left-radius:6px; border-top-right-radius:14px;
+    }
+    .hca-input{
+      display:flex; gap:8px; padding:10px; border-top:1px solid #e5e7eb; background:#fff;
+    }
+    .hca-input input{
+      flex:1; height:42px; border-radius:12px; border:1px solid #e5e7eb; padding:0 12px; outline:none;
+    }
+    .hca-input button{
+      height:42px; min-width:74px; background:#2563eb; color:#fff; border:0; border-radius:12px; cursor:pointer;
+    }
+    .hca-placeholder{ color:var(--hca-muted); font-size:.92rem; }
+  </style>
+
+  <div class="hca-fab" id="hca-fab" aria-label="Open chat">
+    <img alt="Chat" src="${BASE_ICON}">
+  </div>
+
+  <section class="hca-panel" id="hca-panel" role="dialog" aria-label="HCA Assistant">
+    <header class="hca-head">
+      <div class="hca-head-left">
+        <img id="hca-head-icon" src="${BOT_ICON}" alt="Assistant">
+        <span>HCA Assistant</span>
+      </div>
+      <div>
+        <button id="hca-restart" title="Restart">⟳</button>
+        <button id="hca-close"   title="Close">✕</button>
+      </div>
+    </header>
+
+    <main class="hca-body" id="hca-body">
+      <div class="hca-msg bot">
+        <div class="hca-avatar"><img src="${BOT_ICON}" alt=""></div>
+        <div class="hca-bubble"><span class="hca-placeholder">Need help with sewing solutions? I'm here to assist you.</span></div>
+      </div>
+    </main>
+
+    <footer class="hca-input">
+      <input id="hca-input" placeholder="Ask something… (type /restart to refresh)" autocomplete="off" />
+      <button id="hca-send">Send</button>
+    </footer>
+  </section>
+  `;
+
+  /* ---------- HELPERS ---------- */
+  const $ = (sel) => root.querySelector(sel);
+  const panel = $('#hca-panel');
+  const fab   = $('#hca-fab');
+  const body  = $('#hca-body');
+  const input = $('#hca-input');
+
+  fab.addEventListener('click', () => {
+    panel.classList.add('open');
+    fab.style.display = 'none';            // hide bubble while open
+    input.focus();
+  });
+  $('#hca-close').addEventListener('click', () => {
+    panel.classList.remove('open');
+    fab.style.display = 'flex';            // FAB ALWAYS REAPPEARS
+  });
+  $('#hca-restart').addEventListener('click', () => {
+    body.innerHTML = `
+      <div class="hca-msg bot">
+        <div class="hca-avatar"><img src="${BOT_ICON}" alt=""></div>
+        <div class="hca-bubble"><span class="hca-placeholder">Session refreshed. Ask away.</span></div>
+      </div>`;
+  });
+
+  function escapeHtml(s){
+    return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[m]));
+  }
+
+  // Minimal, safe Markdown renderer for bot text
+  function renderMarkdownSafe(src){
+    let s = String(src ?? '');
+    // escape HTML (XSS safety)
+    s = escapeHtml(s);
+    // bold **text**
+    s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    // italics *text*  (avoid matching lists)
+    s = s.replace(/(^|[^\*])\*(?!\s)(.+?)\*(?!\w)/g, '$1<em>$2</em>');
+    // inline code `code`
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    // unordered lists (- item / * item)
+    s = s.replace(/(?:^|\n)[\-\*]\s+(.+)(?=\n|$)/g, (m, a) => `\n<li>${a}</li>`);
+    s = s.replace(/(?:\n<li>.*<\/li>)+/g, m => `<ul>${m}\n</ul>`);
+    // paragraphs / line breaks
+    s = s.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br>');
+    return `<p>${s}</p>`;
+  }
+
+  function addMsg(who, html, {markdown=false}={}){
+    const msg = document.createElement('div');
+    msg.className = `hca-msg ${who}`;
+    const content = markdown ? renderMarkdownSafe(html) : escapeHtml(html);
+    msg.innerHTML = `
+      ${who==='bot' ? `<div class="hca-avatar"><img src="${BOT_ICON}"></div>` : ''}
+      <div class="hca-bubble">${content}</div>
+      ${who==='user'? `<div class="hca-avatar"><img src="${USER_ICON}"></div>` : ''}`;
+    body.appendChild(msg);
+    body.scrollTop = body.scrollHeight;
+  }
+
+  async function askAPI(text){
+    if (text.trim() === '/restart'){ $('#hca-restart').click(); return 'Restarted.'; }
+
+    // Optional health ping
+    try{ fetch(HEALTH, {mode:'cors'}).catch(()=>{}); }catch(e){}
+
+    const payload = {
+      message: text,
+      query: text, question: text, text: text, prompt: text,   // compatibility for n8n/webhooks
+      metadata: { source:'hca-chat', url: location.href, ts: Date.now() }
+    };
+
+    let res, data;
+    try{
+      res  = await fetch(API_URL, {
+        method:'POST',
+        mode:'cors',
+        headers:{ 'Content-Type':'application/json' },
+        body: JSON.stringify(payload)
+      });
+      data = await res.json().catch(()=> ({}));
+      if(!res.ok){
+        const errMsg = data.error || data.message || res.statusText;
+        throw new Error(`API ${res.status}: ${errMsg}`);
+      }
+    }catch(err){
+      console.error('HCA Chat API error:', err);
+      throw err;
+    }
+
+    // Accept common fields
+    const reply = data.answer ?? data.reply ?? data.output ?? data.result ?? data.data ?? '';
+    if (!reply || typeof reply !== 'string'){
+      throw new Error('No usable answer field in response. Keys: ' + Object.keys(data).join(', '));
+    }
+    return reply;
+  }
+
+  async function send(){
+    const text = input.value.trim();
+    if(!text) return;
+    addMsg('user', text);          // user text is escaped (no Markdown)
+    input.value = '';
+
+    // Typing placeholder
+    const holder = document.createElement('div');
+    holder.className = 'hca-msg bot';
+    holder.innerHTML = `<div class="hca-avatar"><img src="${BOT_ICON}"></div>
+                        <div class="hca-bubble"><em>…thinking…</em></div>`;
+    body.appendChild(holder); body.scrollTop = body.scrollHeight;
+
+    try{
+      const reply = await askAPI(text);
+      holder.remove();
+      addMsg('bot', reply, {markdown:true});   // render Markdown safely
+    }catch(err){
+      holder.remove();
+      addMsg('bot',
+        `<strong>Backend error:</strong> ${err.message}<br><span style="color:#6b7280">Check API_BASE, CORS, and response field name.</span>`,
+        {markdown:true}
+      );
+    }
+  }
+
+  $('#hca-send').addEventListener('click', send);
+  input.addEventListener('keydown', (e)=>{ if(e.key==='Enter') send(); });
+
+  // Ensure header icon loads
+  const headIcon = root.querySelector('#hca-head-icon');
+  headIcon.src = BOT_ICON;
+})();
+</script>
