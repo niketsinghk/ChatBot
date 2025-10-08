@@ -1,11 +1,17 @@
 <div id="hca-chat-root"></div>
 <script>
 (() => {
-  /* ---------- ICONS (replace with your paths) ---------- */
-  const ICON_BASE = new URL('./images/', document.baseURI);
-  window.HCA_BOT_ICON  = new URL('icon.png',    ICON_BASE).href;   // bot avatar
-  window.HCA_USER_ICON = new URL('message.png', ICON_BASE).href;   // user avatar
-  window.HCA_BASE_ICON = window.HCA_BOT_ICON;                      // header + FAB icon
+  /* ---------- ICONS (now using external SVGs) ---------- */
+  // Base (FAB + header) and panel icon
+  const BASE_ICON_URL = "https://www.svgrepo.com/show/339963/chat-bot.svg";
+  // Bot + User avatars
+  const BOT_ICON_URL  = "https://www.svgrepo.com/show/334455/bot.svg";
+  const USER_ICON_URL = "https://www.svgrepo.com/show/532363/user-alt-1.svg";
+
+  // Expose for the widget
+  window.HCA_BASE_ICON = BASE_ICON_URL;   // header + FAB icon
+  window.HCA_BOT_ICON  = BOT_ICON_URL;    // bot avatar
+  window.HCA_USER_ICON = USER_ICON_URL;   // user avatar
 
   /* ---------- API CONFIG ---------- */
   const API_BASE = window.HCA_API_BASE || "";
@@ -24,6 +30,7 @@
       display:flex; align-items:center; justify-content:center; box-shadow:0 12px 32px rgba(0,0,0,.18);
       cursor:pointer; z-index:9999; font-size:22px; user-select:none;
     }
+    /* keep filter so dark SVGs appear white on blue */
     .hca-fab img{ width:26px; height:26px; display:block; filter:brightness(0) invert(1); }
 
     .hca-panel{
@@ -47,7 +54,7 @@
     /* chat rows with avatars */
     .hca-row{ display:flex; gap:8px; align-items:flex-end; margin:8px 0; }
     .hca-row.user{ justify-content:flex-end; flex-direction:row-reverse; }
-    .hca-avatar{ width:28px; height:28px; border-radius:50%; background:#e5e7eb center/cover no-repeat; flex:0 0 28px; }
+    .hca-avatar{ width:28px; height:28px; border-radius:50%; background:#e5e7eb center/contain no-repeat; flex:0 0 28px; }
     .hca-bubble{ max-width:72%; padding:10px 12px; border-radius:14px; font:500 14px/1.5 Inter,system-ui; word-wrap:break-word; }
     .hca-row.bot  .hca-bubble{ background:#fff; color:#111; border:1px solid #e5e7eb; border-bottom-left-radius:6px; }
     .hca-row.user .hca-bubble{ background:#2563eb; color:#fff; border-bottom-right-radius:6px; text-align:right; margin-left:auto; }
@@ -62,7 +69,7 @@
     .hca-row.bot .hca-bubble a{ color:#1d4ed8; text-decoration:none; border-bottom:1px dotted #93c5fd; }
     .hca-row.bot .hca-bubble a:hover{ text-decoration:underline; }
 
-    /* professional list spacing (the key for no asterisks) */
+    /* professional list spacing (bullets) */
     .hca-row.bot .hca-bubble ul{ margin:6px 0 0 18px; padding:0; }
     .hca-row.bot .hca-bubble li{ margin:4px 0; }
 
@@ -173,42 +180,25 @@
 
   function renderMarkdown(input){
     const text = escapeHtml(input).replace(/\r\n/g, "\n");
-
-    // Inline formatting helper
     const inline = (s) => {
-      s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'); // [text](url)
-      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');           // `code`
-      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');   // **bold**
-      s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>'); // *italic*
+      s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+      s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+      s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
       return s;
     };
 
     const lines = text.split("\n");
-    let html = "";
-    let inList = false;
-
+    let html = "", inList = false;
     const closeList = () => { if(inList){ html += "</ul>"; inList = false; } };
 
     for (let i = 0; i < lines.length; i++){
       const line = lines[i];
-
-      // Bullet: starts with "* " or "- "
       const m = line.match(/^\s*[*-]\s+(.+)/);
-      if (m){
-        if (!inList){ html += "<ul>"; inList = true; }
-        html += `<li>${inline(m[1].trim())}</li>`;
-        continue;
-      }
-
-      // Blank line => paragraph break / end list
-      if (line.trim() === ""){
-        closeList(); html += "<br/>"; continue;
-      }
-
-      // Normal line
+      if (m){ if(!inList){ html += "<ul>"; inList = true; } html += `<li>${inline(m[1].trim())}</li>`; continue; }
+      if (line.trim() === ""){ closeList(); html += "<br/>"; continue; }
       closeList(); html += inline(line) + "<br/>";
     }
-
     closeList();
     return html;
   }
@@ -224,8 +214,6 @@
 
     const bubble = document.createElement("div");
     bubble.className = "hca-bubble";
-
-    // Apply Markdown only to bot replies
     if (who === "bot"){ bubble.innerHTML = renderMarkdown(text); }
     else { bubble.textContent = text; }
 
@@ -296,7 +284,7 @@
         appendMsg(String(errMsg), "bot");
       } else {
         const answer = data.answer || data.output || "Sorry, I couldn't find that in the PDF.";
-        appendMsg(answer, "bot"); // renders bullets/bold professionally
+        appendMsg(answer, "bot");
       }
     }catch(e){
       appendMsg("Server error. Please try again.", "bot");
