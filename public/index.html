@@ -2,6 +2,7 @@
 <script>
 (() => {
   /* ---------- ICONS (replace with your paths) ---------- */
+  const ICON_BASE = new URL('/images/', window.location.origin);
   const ICON_BASE = new URL('./images/', document.baseURI);
   window.HCA_BOT_ICON  = new URL('icon.png',    ICON_BASE).href;   // bot avatar
   window.HCA_USER_ICON = new URL('message.png', ICON_BASE).href;   // user avatar
