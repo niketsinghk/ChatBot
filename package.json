@@ -16,12 +16,5 @@
     "express": "^4.21.2",
     "glob": "^11.0.0",
     "pdf-parse": "^1.1.1"
-  },
-  fetch("/api/ask", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ message: "Hello bot" })
-})
-  .then(r => r.json())
-  .then(console.log);
+  }
 }
