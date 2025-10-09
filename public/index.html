@@ -17,6 +17,28 @@
   const API_BASE = window.HCA_API_BASE || "";
   const API_URL  = `${API_BASE}/api/ask`;
   const HEALTH   = `${API_BASE}/api/health`;
+  const RESET    = `${API_BASE}/api/reset`; // optional (server may or may not have it)
+
+  /* ---------- SESSION ID (persistent across reloads) ---------- */
+  function getOrCreateSessionId() {
+    const KEY = "hca_session_id";
+    try {
+      let sid = localStorage.getItem(KEY);
+      if (!sid) {
+        sid = (crypto && crypto.randomUUID)
+          ? crypto.randomUUID()
+          : "sid-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+        localStorage.setItem(KEY, sid);
+      }
+      return sid;
+    } catch {
+      // Fallback if localStorage is blocked
+      return (crypto && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : "sid-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    }
+  }
+  const SESSION_ID = getOrCreateSessionId();
 
   /* ---------- UI MOUNT ---------- */
   const root = document.getElementById("hca-chat-root");
@@ -238,21 +260,35 @@
     }
   }
 
-  function resetChat(){
+  async function resetChat(){
     log.innerHTML = "";
     appendMsg("Need help with sewing solutions? I'm here to assist you.", "bot");
+
+    // Clear local history (if any)
     try{
-      localStorage.removeItem("chat_session_id");
       localStorage.removeItem("hca_history");
-      sessionStorage.removeItem("chat_session_id");
       sessionStorage.removeItem("hca_history");
     }catch(_){}
+
+    // Ask server to clear THIS session's history (if endpoint exists)
+    try{
+      await fetch(RESET, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Session-ID": SESSION_ID
+        },
+        credentials: "include",
+        body: JSON.stringify({ sessionId: SESSION_ID })
+      });
+    }catch(_ignored){}
+
     input.value = ""; input.focus();
     scheduleHint(800);
   }
   refreshBtn.onclick = resetChat;
 
-  /* ---------- Ask ---------- */
+  /* ---------- Ask (now sends SESSION_ID in header + body) ---------- */
   async function ask(){
     const q = input.value.trim();
     if(!q) return;
@@ -271,8 +307,13 @@
     try{
       const res = await fetch(API_URL, {
         method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({ question: q })
+        headers:{
+          "Content-Type":"application/json",
+          "X-Session-ID": SESSION_ID
+        },
+        credentials: "include", // allow server to set/read cookie if it wants
+        // Keep your existing payload key "question" but include sessionId too
+        body: JSON.stringify({ question: q, sessionId: SESSION_ID })
       });
 
       const text = await res.text();
@@ -302,6 +343,10 @@
   input.addEventListener("keydown", (e)=>{ if(e.key==="Enter") ask(); });
 
   /* ---------- Optional health check ---------- */
-  fetch(HEALTH).then(r=>r.json()).then(j=>console.log("HCA Assistant:", j)).catch(()=>{});
+  fetch(HEALTH, { credentials: "include" })
+    .then(r=>r.json())
+    .then(j=>console.log("HCA Assistant:", j))
+    .catch(()=>{});
+
 })();
 </script>
