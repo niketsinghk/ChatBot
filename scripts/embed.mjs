@@ -131,18 +131,18 @@ async function main() {
     const batchOriginal = chunks.slice(i, i + batchSize);
     const batchCleaned = batchOriginal.map(c => cleanForEmbedding(c));
     const res = await embedder.batchEmbedContents({
-  requests: batchCleaned.map((c) => ({
-    content: { parts: [{ text: c || " " }] }
-  }))
-});
+      requests: batchCleaned.map((c) => ({
+        content: { parts: [{ text: c || " " }] }
+      }))
+    });
 
-// NOTE: result field is `embeddings` (array) with `.values`
-const batchVectors = res.embeddings.map((e, j) => ({
-  id: i + j,
-  text_original: batchOriginal[j],
-  text_cleaned: batchCleaned[j],
-  embedding: e.values
-}));
+    // NOTE: result field is `embeddings` (array) with `.values`
+    const batchVectors = res.embeddings.map((e, j) => ({
+      id: i + j,
+      text_original: batchOriginal[j],
+      text_cleaned: batchCleaned[j],
+      embedding: e.values
+    }));
 
     vectors.push(...batchVectors);
     console.log(`   → ${Math.min(i + batchSize, chunks.length)}/${chunks.length}`);
