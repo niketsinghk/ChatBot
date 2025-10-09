@@ -31,7 +31,7 @@ const app = express();
 app.use(
   cors({
     origin: true,          // set to your frontend origin(s) in prod
-    credentials: true,     // allow cookie
+    credentials: true,
   })
 );
 app.use(express.json({ limit: "2mb" }));
@@ -66,7 +66,7 @@ function sessionMiddleware(req, res, next) {
       httpOnly: true,
       sameSite: "Lax",
       secure: !!process.env.COOKIE_SECURE, // set COOKIE_SECURE=1 behind HTTPS
-      maxAge: 1000 * 60 * 60 * 24 * 30,    // 30 days
+      maxAge: 1000 * 60 * 60 * 24 * 30,
     });
   }
   const now = Date.now();
@@ -82,7 +82,6 @@ function sessionMiddleware(req, res, next) {
 function detectResponseMode(q) {
   const text = (q || "").toLowerCase();
   if (/[\u0900-\u097F]/.test(text)) return "hinglish";
-
   const hinglishTokens = [
     "hai","hain","tha","thi","the","kya","kyu","kyun","kyunki","kisi","kis",
     "kaun","kab","kaha","kahaan","kaise","nahi","nahin","ka","ki","ke","mein","me","mai","mei",
@@ -246,12 +245,12 @@ function smallTalkMatch(q) {
   const t = (q || "").trim();
   const patterns = [
     { kind: "hello",     re: /^(hi+|h[iy]+|hello+|hey( there)?|hlo+|hloo+|yo+|hola|namaste|namaskar|salaam|salam|sup|wass?up|what'?s up|👋|🙏)\b/i },
-    { kind: "morning",   re: /^good\s*morning\b/i },
-    { kind: "afternoon", re: /^good\s*afternoon\b/i },
-    { kind: "evening",   re: /^good\s*evening\b/i },
+    { kind: "morning",   re: /^(good\s*morning|gm)\b/i },
+    { kind: "afternoon", re: /^(good\s*afternoon|ga)\b/i },
+    { kind: "evening",   re: /^(good\s*evening|ge)\b/i },
     { kind: "ack",       re: /^(ok+|okay+|okk+|hmm+|haan+|ha+|sure|done|great|nice|cool|perfect|thik|theek|fine)\b/i },
-    { kind: "thanks",    re: /^(thanks|thank\s*you|thx|ty|much\s*(appreciated|thanks)|many\s*thanks|appreciate(d)?|shukriya|dhanyavaad|dhanyavad)\b/i },
-    { kind: "bye",       re: /^(bye|good\s*bye|goodbye|see\s*ya|see\s*you|take\s*care|tc|catch\s*you\s*later)\b/i },
+    { kind: "thanks",    re: /^(thanks|thank\s*you|thx|tnx|ty|tx|much\s*(appreciated|thanks)|many\s*thanks|appreciate(d)?|shukriya|dhanyavaad|dhanyavad)\b/i },
+    { kind: "bye",       re: /^(bye|bb|good\s*bye|goodbye|see\s*ya|see\s*you|take\s*care|tc|ciao|gn)\b/i },
     { kind: "help",      re: /(who\s*are\s*you|what\s*can\s*you\s*do|help|menu|options|how\s*to\s*use)\b/i },
   ];
   for (const p of patterns) if (p.re.test(t)) return p.kind;
@@ -278,6 +277,7 @@ app.get("/api/session", sessionMiddleware, (req, res) => {
 /* ===================== Ask ===================== */
 app.post("/api/ask", sessionMiddleware, async (req, res) => {
   try {
+    // support both keys
     const question = (req.body?.question ?? req.body?.message ?? "").toString();
     if (!question || typeof question !== "string") {
       return res.status(400).json({ error: "Missing 'question' (or 'message') string" });
@@ -286,22 +286,38 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
     const q = question.trim();
     const mode = detectResponseMode(q);
 
-    // 1) Ultra-short guard → treat as greeting
-    const lettersOnly = q.replace(/[\W_]+/g, "");
-    if (lettersOnly.length <= 3) {
-      const reply = makeSmallTalkReply("hello", mode);
+    // 1) intent-aware short-token guard
+    const short = q.toLowerCase().trim().replace(/[^a-z]/g, "");
+    const HELLO_SHORT  = new Set(["hi","hey","yo","sup"]);
+    const BYE_SHORT    = new Set(["bye","bb","ciao","gn"]);
+    const THANKS_SHORT = new Set(["ty","thx","tnx","tx"]);
+    const GM_SHORT     = new Set(["gm"]);
+    const GA_SHORT     = new Set(["ga"]);
+    const GE_SHORT     = new Set(["ge"]);
+
+    const quickKind =
+      (HELLO_SHORT.has(short) && "hello") ||
+      (BYE_SHORT.has(short)   && "bye")   ||
+      (THANKS_SHORT.has(short)&& "thanks")||
+      (GM_SHORT.has(short)    && "morning")||
+      (GA_SHORT.has(short)    && "afternoon")||
+      (GE_SHORT.has(short)    && "evening")||
+      null;
+
+    if (quickKind) {
+      const reply = makeSmallTalkReply(quickKind, mode);
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: reply, ts: Date.now() });
-      return res.json({ answer: reply, sessionId: req.sid, mode, citations: [] });
+      return res.json({ answer: reply, reply, sessionId: req.sid, mode, citations: [] });
     }
 
-    // 2) Small talk detector
+    // 2) regex small-talk detector
     const kind = smallTalkMatch(q);
     if (kind) {
       const reply = makeSmallTalkReply(kind, mode);
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: reply, ts: Date.now() });
-      return res.json({ answer: reply, sessionId: req.sid, mode, citations: [] });
+      return res.json({ answer: reply, reply, sessionId: req.sid, mode, citations: [] });
     }
 
     // 3) RAG route
@@ -311,12 +327,12 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
         : "Embeddings are not loaded. Please run `npm run embed` to prepare the knowledge base.";
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: fallback, ts: Date.now() });
-      return res.status(500).json({ answer: fallback, sessionId: req.sid, mode, citations: [] });
+      return res.json({ answer: fallback, reply: fallback, sessionId: req.sid, mode, citations: [] });
     }
 
     const cleanedQuery = cleanForEmbedding(q) || q.toLowerCase();
 
-    // Embed query (text-embedding-004)
+    // Embed query
     const embRes = await embedder.embedContent({
       content: { parts: [{ text: cleanedQuery }] },
     });
@@ -328,7 +344,6 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
       .sort((a, b) => b.score - a.score)
       .slice(0, TOP_K);
 
-    // Optional: soft fallback when nothing matches well
     const MIN_OK_SCORE = 0.18;
     if (scored.length === 0 || (scored?.[0]?.score ?? 0) < MIN_OK_SCORE) {
       const tip = mode === "hinglish"
@@ -336,7 +351,7 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
         : "I couldn’t find clear context in the knowledge base for that. Try being more specific—for example, 'Duke-Jia E+P flagship features' or 'Highlead 269 application'.";
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: tip, ts: Date.now() });
-      return res.json({ answer: tip, sessionId: req.sid, mode, citations: [] });
+      return res.json({ answer: tip, reply: tip, sessionId: req.sid, mode, citations: [] });
     }
 
     const contextBlocks = scored
@@ -374,7 +389,6 @@ Format:
 - Use the reply language specified above.
 `.trim();
 
-    // Append user turn
     req.session.history.push({ role: "user", content: q, ts: Date.now() });
 
     const result = await llm.generateContent({
@@ -382,11 +396,11 @@ Format:
     });
     const text = result.response.text();
 
-    // Append assistant turn
     req.session.history.push({ role: "assistant", content: text, ts: Date.now() });
 
     res.json({
       answer: text,
+      reply: text,
       mode,
       sessionId: req.sid,
       citations: scored.map((s, i) => ({ idx: i + 1, score: s.score })),
