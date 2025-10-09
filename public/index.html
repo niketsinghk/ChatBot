@@ -39,6 +39,10 @@
     }
   }
   const SESSION_ID = getOrCreateSessionId();
+  // show a short tag of the session in the header
+  const t = document.getElementById("hca-title");
+  if (t) t.textContent = `HCA Assistant — ${SESSION_ID.slice(0,8)}…`;
+
 
   /* ---------- UI MOUNT ---------- */
   const root = document.getElementById("hca-chat-root");
@@ -131,7 +135,7 @@
     <div class="hca-head">
       <div class="hca-head-left">
         <img id="hca-head-icon" alt="Assistant"/>
-        <span>HCA Assistant</span>
+        <span id="hca-title">HCA Assistant</span>
       </div>
       <div class="hca-actions">
         <button class="hca-btn" id="hca-refresh" title="Restart chat" aria-label="Restart chat">⟲</button>

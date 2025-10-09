@@ -18,7 +18,6 @@ const DATA_DIR = path.join(__dirname, "data");
 const EMB_PATH = path.join(DATA_DIR, "index.json");
 const TOP_K = parseInt(process.env.TOP_K || "6", 10);
 
-// Models (override via .env if needed)
 const GENERATION_MODEL = process.env.GENERATION_MODEL || "gemini-2.5-flash";
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "text-embedding-004";
 
@@ -29,12 +28,10 @@ if (!process.env.GOOGLE_API_KEY) {
 
 /* ===================== App ===================== */
 const app = express();
-
-// CORS with credentials so cookies work cross-origin if needed
 app.use(
   cors({
-    origin: true, // or set to your frontend origins array
-    credentials: true,
+    origin: true,          // set to your frontend origin(s) in prod
+    credentials: true,     // allow cookie
   })
 );
 app.use(express.json({ limit: "2mb" }));
@@ -44,81 +41,64 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/images", express.static(path.join(__dirname, "images")));
 
+/* ===================== Gemini ===================== */
 const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 const embedder = genAI.getGenerativeModel({ model: EMBEDDING_MODEL });
 const llm = genAI.getGenerativeModel({ model: GENERATION_MODEL });
 
 /* ===================== Session Store ===================== */
-// In-memory (replace with Redis for production)
-const sessions = new Map();
-// shape: sessions.set(sid, { history: [], createdAt, lastSeen });
+const sessions = new Map(); // sid -> { history: [], createdAt, lastSeen }
 
 function getTimeOfDayGreeting() {
-  const hour = new Date().getHours(); // server time; good enough
-  if (hour < 5) return "Good night";
-  if (hour < 12) return "Good morning";
-  if (hour < 17) return "Good afternoon";
-  if (hour < 21) return "Good evening";
+  const h = new Date().getHours();
+  if (h < 5) return "Good night";
+  if (h < 12) return "Good morning";
+  if (h < 17) return "Good afternoon";
+  if (h < 21) return "Good evening";
   return "Hello";
 }
 
-// Session middleware: read/mint SID, attach session bucket
 function sessionMiddleware(req, res, next) {
-  let sid =
-    req.get("X-Session-ID") ||
-    req.body?.sessionId ||
-    req.cookies?.sid;
-
+  let sid = req.get("X-Session-ID") || req.body?.sessionId || req.cookies?.sid;
   if (!sid || typeof sid !== "string" || sid.length > 200) {
     sid = uuidv4();
     res.cookie("sid", sid, {
       httpOnly: true,
       sameSite: "Lax",
-      secure: !!process.env.COOKIE_SECURE, // set COOKIE_SECURE=1 on HTTPS
-      maxAge: 1000 * 60 * 60 * 24 * 30, // 30 days
+      secure: !!process.env.COOKIE_SECURE, // set COOKIE_SECURE=1 behind HTTPS
+      maxAge: 1000 * 60 * 60 * 24 * 30,    // 30 days
     });
   }
-
   const now = Date.now();
-  if (!sessions.has(sid)) {
-    sessions.set(sid, { history: [], createdAt: now, lastSeen: now });
-  } else {
-    sessions.get(sid).lastSeen = now;
-  }
+  if (!sessions.has(sid)) sessions.set(sid, { history: [], createdAt: now, lastSeen: now });
+  else sessions.get(sid).lastSeen = now;
+
   req.sid = sid;
   req.session = sessions.get(sid);
   next();
 }
 
-/* ===================== Lang Mode Detection ===================== */
+/* ===================== Language Mode ===================== */
 function detectResponseMode(q) {
   const text = (q || "").toLowerCase();
-  const hasDevanagari = /[\u0900-\u097F]/.test(text);
-  if (hasDevanagari) return "hinglish";
+  if (/[\u0900-\u097F]/.test(text)) return "hinglish";
 
   const hinglishTokens = [
     "hai","hain","tha","thi","the","kya","kyu","kyun","kyunki","kisi","kis",
     "kaun","kab","kaha","kahaan","kaise","nahi","nahin","ka","ki","ke","mein","me","mai","mei",
     "hum","ap","aap","tum","kr","kar","karo","karna","chahiye","bhi","sirf","jaldi","kitna",
-    "kab","kaha","kaise","ho","hoga","hogaya","krdo","pls","plz","yaar","shukriya","dhanyavaad","dhanyavad"
+    "ho","hoga","hogaya","krdo","pls","plz","yaar","shukriya","dhanyavaad","dhanyavad"
   ];
   let score = 0;
   for (const t of hinglishTokens) {
-    if (
-      text.includes(` ${t} `) ||
-      text.startsWith(t + " ") ||
-      text.endsWith(" " + t) ||
-      text === t
-    ) {
-      score += 1;
-    }
+    if (text.includes(` ${t} `) || text.startsWith(t + " ") || text.endsWith(" " + t) || text === t) score += 1;
   }
   const chatCues = (text.match(/[:)(!?]{2,}|\.{3,}|😂|👍|🙏/g) || []).length;
   score += chatCues >= 1 ? 0.5 : 0;
   return score >= 2 ? "hinglish" : "english";
 }
 
-/* ===================== Stopwords + Cleaner ===================== */
+/* ===================== Stopwords & Cleaner ===================== */
 const EN_STOPWORDS = new Set(`a about above after again against all am an and any are aren't as at
 be because been before being below between both but by
 can't cannot could couldn't did didn't do does doesn't doing don't down during
@@ -174,27 +154,17 @@ function cleanForEmbedding(s) {
 
 /* ===================== Vectors ===================== */
 function cosineSim(a, b) {
-  let dot = 0,
-    na = 0,
-    nb = 0;
+  let dot = 0, na = 0, nb = 0;
   const n = Math.min(a.length, b.length);
-  for (let i = 0; i < n; i++) {
-    dot += a[i] * b[i];
-    na += a[i] * a[i];
-    nb += b[i] * b[i];
-  }
+  for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
-
 function loadVectors() {
-  if (!fs.existsSync(EMB_PATH)) {
-    throw new Error(`Embeddings not found at ${EMB_PATH}. Run "npm run embed" first.`);
-  }
+  if (!fs.existsSync(EMB_PATH)) throw new Error(`Embeddings not found at ${EMB_PATH}. Run "npm run embed" first.`);
   const raw = JSON.parse(fs.readFileSync(EMB_PATH, "utf8"));
   if (!raw?.vectors?.length) throw new Error("Embeddings file has no vectors.");
   return raw.vectors;
 }
-
 let VECTORS = [];
 try {
   VECTORS = loadVectors();
@@ -203,7 +173,7 @@ try {
   console.warn("⚠️", err.message);
 }
 
-/* ===================== Small Talk (Greetings / Thanks / Goodbyes / Help) ===================== */
+/* ===================== Small Talk ===================== */
 function makeSmallTalkReply(kind, mode) {
   const en = {
     hello: [
@@ -225,6 +195,10 @@ function makeSmallTalkReply(kind, mode) {
     help: [
       `I answer from HCA’s knowledge base. You can ask: “Which brands do we represent?”, “About Duke-Jia E+P flagship”, or “Industries we serve?”`,
     ],
+    ack: [
+      `Got it! 👍 What would you like to ask about HCA next?`,
+      `Okay. Tell me your HCA question—brands, machines, or spares.`,
+    ],
   };
 
   const hi = {
@@ -245,7 +219,11 @@ function makeSmallTalkReply(kind, mode) {
       `Bye! 👋 Din shubh rahe.`,
     ],
     help: [
-      `Main HCA ke knowledge base se answer karta hoon. Aap pooch sakte ho: “Hum kin brands ko represent karte hain?”, “Duke-Jia E+P flagship kya hai?”, “Hum kaun-kaun se industries serve karte hain?”`,
+      `Main HCA ke knowledge base se answer karta hoon. Aap pooch sakte ho: “Hum kin brands ko represent karte hain?”, “Duke-Jia E+P flagship kya hai?”, “Hum kaun-kaun si industries serve karte hain?”`,
+    ],
+    ack: [
+      `Thik hai! 👍 Ab HCA ke baare mein kya puchhna hai?`,
+      `Okay ji. HCA—brands, machines ya spares—kis par info chahiye?`,
     ],
   };
 
@@ -259,40 +237,35 @@ function makeSmallTalkReply(kind, mode) {
     case "thanks": return pick(bank.thanks);
     case "bye": return pick(bank.bye);
     case "help": return pick(bank.help);
+    case "ack": return pick(bank.ack);
     default: return pick(bank.hello);
   }
 }
 
 function smallTalkMatch(q) {
-  const text = (q || "").trim();
-
-  // Exact combos / rich variants
+  const t = (q || "").trim();
   const patterns = [
-    { kind: "hello", re: /^(hi|hello|hey|hlo|hola|namaste|namaskar|salaam|salam|yo)\b/i },
-    { kind: "morning", re: /^good\s*morning\b/i },
+    { kind: "hello",     re: /^(hi+|h[iy]+|hello+|hey( there)?|hlo+|hloo+|yo+|hola|namaste|namaskar|salaam|salam|sup|wass?up|what'?s up|👋|🙏)\b/i },
+    { kind: "morning",   re: /^good\s*morning\b/i },
     { kind: "afternoon", re: /^good\s*afternoon\b/i },
-    { kind: "evening", re: /^good\s*evening\b/i },
-    { kind: "thanks", re: /^(thanks|thank\s*you|thx|ty|much\s*appreciated|appreciate(d)?|great\s*thanks|many\s*thanks|shukriya|dhanyavaad|dhanyavad)\b/i },
-    { kind: "bye", re: /^(bye|goodbye|see\s*ya|see\s*you|take\s*care|tc|catch\s*you\s*later)\b/i },
-    { kind: "help", re: /(who\s*are\s*you|what\s*can\s*you\s*do|help|menu|options)\b/i },
+    { kind: "evening",   re: /^good\s*evening\b/i },
+    { kind: "ack",       re: /^(ok+|okay+|okk+|hmm+|haan+|ha+|sure|done|great|nice|cool|perfect|thik|theek|fine)\b/i },
+    { kind: "thanks",    re: /^(thanks|thank\s*you|thx|ty|much\s*(appreciated|thanks)|many\s*thanks|appreciate(d)?|shukriya|dhanyavaad|dhanyavad)\b/i },
+    { kind: "bye",       re: /^(bye|good\s*bye|goodbye|see\s*ya|see\s*you|take\s*care|tc|catch\s*you\s*later)\b/i },
+    { kind: "help",      re: /(who\s*are\s*you|what\s*can\s*you\s*do|help|menu|options|how\s*to\s*use)\b/i },
   ];
-
-  for (const p of patterns) {
-    if (p.re.test(text)) return p.kind;
-  }
+  for (const p of patterns) if (p.re.test(t)) return p.kind;
   return null;
 }
 
-/* ===================== Health ===================== */
+/* ===================== Health & Utilities ===================== */
 app.get("/api/health", (_, res) => res.json({ ok: true, ts: Date.now() }));
 
-/* ===================== Reset (clear session history) ===================== */
 app.post("/api/reset", sessionMiddleware, (req, res) => {
   req.session.history = [];
-  return res.json({ sessionId: req.sid, cleared: true });
+  res.json({ sessionId: req.sid, cleared: true });
 });
 
-/* ===================== Debug session ===================== */
 app.get("/api/session", sessionMiddleware, (req, res) => {
   res.json({
     sessionId: req.sid,
@@ -305,7 +278,6 @@ app.get("/api/session", sessionMiddleware, (req, res) => {
 /* ===================== Ask ===================== */
 app.post("/api/ask", sessionMiddleware, async (req, res) => {
   try {
-    // Accept either "question" or "message"
     const question = (req.body?.question ?? req.body?.message ?? "").toString();
     if (!question || typeof question !== "string") {
       return res.status(400).json({ error: "Missing 'question' (or 'message') string" });
@@ -314,17 +286,25 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
     const q = question.trim();
     const mode = detectResponseMode(q);
 
-    // --- Small Talk first ---
-    const kind = smallTalkMatch(q);
-    if (kind) {
-      const reply = makeSmallTalkReply(kind, mode);
-      // log into session history too
+    // 1) Ultra-short guard → treat as greeting
+    const lettersOnly = q.replace(/[\W_]+/g, "");
+    if (lettersOnly.length <= 3) {
+      const reply = makeSmallTalkReply("hello", mode);
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: reply, ts: Date.now() });
       return res.json({ answer: reply, sessionId: req.sid, mode, citations: [] });
     }
 
-    // RAG disabled until vectors loaded
+    // 2) Small talk detector
+    const kind = smallTalkMatch(q);
+    if (kind) {
+      const reply = makeSmallTalkReply(kind, mode);
+      req.session.history.push({ role: "user", content: q, ts: Date.now() });
+      req.session.history.push({ role: "assistant", content: reply, ts: Date.now() });
+      return res.json({ answer: reply, sessionId: req.sid, mode, citations: [] });
+    }
+
+    // 3) RAG route
     if (!VECTORS.length) {
       const fallback = mode === "hinglish"
         ? "Embeddings load nahi hue. Pehle `npm run embed` chalaa kar knowledge base taiyaar kijiye."
@@ -334,23 +314,30 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
       return res.status(500).json({ answer: fallback, sessionId: req.sid, mode, citations: [] });
     }
 
-    // Cleaned query for embedding
     const cleanedQuery = cleanForEmbedding(q) || q.toLowerCase();
 
-    // ---- Embed query (text-embedding-004 expects `content`) ----
+    // Embed query (text-embedding-004)
     const embRes = await embedder.embedContent({
       content: { parts: [{ text: cleanedQuery }] },
     });
-    const qVec =
-      embRes?.embedding?.values ||
-      embRes?.embeddings?.[0]?.values ||
-      [];
+    const qVec = embRes?.embedding?.values || embRes?.embeddings?.[0]?.values || [];
 
-    // ---- Retrieve top-K ----
+    // Retrieve
     const scored = VECTORS
       .map((v) => ({ ...v, score: cosineSim(qVec, v.embedding) }))
       .sort((a, b) => b.score - a.score)
       .slice(0, TOP_K);
+
+    // Optional: soft fallback when nothing matches well
+    const MIN_OK_SCORE = 0.18;
+    if (scored.length === 0 || (scored?.[0]?.score ?? 0) < MIN_OK_SCORE) {
+      const tip = mode === "hinglish"
+        ? "Is topic par knowledge base mein clear info nahi mil rahi. Thoda specific likhiye—jaise 'Duke-Jia E+P flagship features' ya 'Highlead 269 application'."
+        : "I couldn’t find clear context in the knowledge base for that. Try being more specific—for example, 'Duke-Jia E+P flagship features' or 'Highlead 269 application'.";
+      req.session.history.push({ role: "user", content: q, ts: Date.now() });
+      req.session.history.push({ role: "assistant", content: tip, ts: Date.now() });
+      return res.json({ answer: tip, sessionId: req.sid, mode, citations: [] });
+    }
 
     const contextBlocks = scored
       .map((s, i) => `【${i + 1}】 ${s.text_original || s.text_cleaned || s.text}`)
@@ -387,19 +374,18 @@ Format:
 - Use the reply language specified above.
 `.trim();
 
-    // Append user message before generation so history is complete
+    // Append user turn
     req.session.history.push({ role: "user", content: q, ts: Date.now() });
 
     const result = await llm.generateContent({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     });
-
     const text = result.response.text();
 
-    // Save assistant reply in session history
+    // Append assistant turn
     req.session.history.push({ role: "assistant", content: text, ts: Date.now() });
 
-    return res.json({
+    res.json({
       answer: text,
       mode,
       sessionId: req.sid,
@@ -409,7 +395,7 @@ Format:
     console.error("Ask error:", err);
     const status = err?.status || 500;
     const msg = err?.message || err?.statusText || "Generation failed";
-    return res.status(status).json({
+    res.status(status).json({
       error: msg,
       details: { status, statusText: err?.statusText || null, type: err?.name || null },
     });
