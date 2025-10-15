@@ -1,14 +1,11 @@
 {
-  "routes": [
-    { "src": "/api/(.*)", "dest": "/api/$1" },
-    { "src": "/(.*)", "dest": "/public/index.html" }
+  "version": 2,
+  "builds": [
+    { "src": "server.mjs", "use": "@vercel/node" },
+    { "src": "api/**/*.mjs", "use": "@vercel/node" }
   ],
-  "headers": [
-    {
-      "source": "/api/(.*)",
-      "headers": [
-        { "key": "Cache-Control", "value": "no-store" }
-      ]
-    }
+  "routes": [
+    { "src": "/api/(.*)", "dest": "/api/$1.mjs" },
+    { "src": "/(.*)", "dest": "/server.mjs" }
   ]
 }
