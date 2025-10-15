@@ -2,22 +2,35 @@
 <script>
 (() => {
   /* ---------- ICONS (now using external SVGs) ---------- */
-  // Base (FAB + header) and panel icon
   const BASE_ICON_URL = "https://www.svgrepo.com/show/339963/chat-bot.svg";
-  // Bot + User avatars
   const BOT_ICON_URL  = "https://www.svgrepo.com/show/334455/bot.svg";
   const USER_ICON_URL = "https://www.svgrepo.com/show/532363/user-alt-1.svg";
 
-  // Expose for the widget
-  window.HCA_BASE_ICON = BASE_ICON_URL;   // header + FAB icon
-  window.HCA_BOT_ICON  = BOT_ICON_URL;    // bot avatar
-  window.HCA_USER_ICON = USER_ICON_URL;   // user avatar
+  window.HCA_BASE_ICON = BASE_ICON_URL;
+  window.HCA_BOT_ICON  = BOT_ICON_URL;
+  window.HCA_USER_ICON = USER_ICON_URL;
 
   /* ---------- API CONFIG ---------- */
   const API_BASE = window.HCA_API_BASE || "";
   const API_URL  = `${API_BASE}/api/ask`;
   const HEALTH   = `${API_BASE}/api/health`;
-  const RESET    = `${API_BASE}/api/reset`; // optional (server may or may not have it)
+  const RESET    = `${API_BASE}/api/reset`; // optional
+
+  /* ---------- Time-based greeting (IST) ---------- */
+  function getISTGreeting() {
+    const hour = Number(new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata", hour: "2-digit", hour12: false
+    }).format(new Date()));
+    if (hour < 5)  return "Good night";
+    if (hour < 12) return "Good morning";
+    if (hour < 17) return "Good afternoon";
+    if (hour < 21) return "Good evening";
+    return "Good night";
+  }
+  function buildWelcomeLine() {
+    const g = getISTGreeting();
+    return `${g}! I’m HCA Assistant`;
+  }
 
   /* ---------- SESSION ID (persistent across reloads) ---------- */
   function getOrCreateSessionId() {
@@ -32,17 +45,12 @@
       }
       return sid;
     } catch {
-      // Fallback if localStorage is blocked
       return (crypto && crypto.randomUUID)
         ? crypto.randomUUID()
         : "sid-" + Math.random().toString(36).slice(2) + Date.now().toString(36);
     }
   }
   const SESSION_ID = getOrCreateSessionId();
-  // show a short tag of the session in the header
-  const t = document.getElementById("hca-title");
-  if (t) t.textContent = `HCA Assistant — ${SESSION_ID.slice(0,8)}…`;
-
 
   /* ---------- UI MOUNT ---------- */
   const root = document.getElementById("hca-chat-root");
@@ -56,7 +64,6 @@
       display:flex; align-items:center; justify-content:center; box-shadow:0 12px 32px rgba(0,0,0,.18);
       cursor:pointer; z-index:9999; font-size:22px; user-select:none;
     }
-    /* keep filter so dark SVGs appear white on blue */
     .hca-fab img{ width:26px; height:26px; display:block; filter:brightness(0) invert(1); }
 
     .hca-panel{
@@ -77,7 +84,6 @@
 
     .hca-body{ flex:1; background:#f8fafc; padding:12px; overflow:auto; }
 
-    /* chat rows with avatars */
     .hca-row{ display:flex; gap:8px; align-items:flex-end; margin:8px 0; }
     .hca-row.user{ justify-content:flex-end; flex-direction:row-reverse; }
     .hca-avatar{ width:28px; height:28px; border-radius:50%; background:#e5e7eb center/contain no-repeat; flex:0 0 28px; }
@@ -85,7 +91,6 @@
     .hca-row.bot  .hca-bubble{ background:#fff; color:#111; border:1px solid #e5e7eb; border-bottom-left-radius:6px; }
     .hca-row.user .hca-bubble{ background:#2563eb; color:#fff; border-bottom-right-radius:6px; text-align:right; margin-left:auto; }
 
-    /* tidy markdown inside bubbles */
     .hca-row.bot .hca-bubble strong{ font-weight:800; }
     .hca-row.bot .hca-bubble em{ font-style:italic; }
     .hca-row.bot .hca-bubble code{
@@ -95,7 +100,6 @@
     .hca-row.bot .hca-bubble a{ color:#1d4ed8; text-decoration:none; border-bottom:1px dotted #93c5fd; }
     .hca-row.bot .hca-bubble a:hover{ text-decoration:underline; }
 
-    /* professional list spacing (bullets) */
     .hca-row.bot .hca-bubble ul{ margin:6px 0 0 18px; padding:0; }
     .hca-row.bot .hca-bubble li{ margin:4px 0; }
 
@@ -103,24 +107,37 @@
     .hca-input{ flex:1; border:1px solid #e5e7eb; border-radius:12px; padding:10px 12px; font:500 14px Inter,system-ui; }
     .hca-send{ background:#2563eb; color:#fff; border:0; border-radius:12px; padding:10px 14px; font-weight:700; cursor:pointer; }
     .hca-send[disabled]{ opacity:.6; cursor:not-allowed; }
-    .hca-typing{ font-size:12px; color:var(--hca-muted); margin:4px 0 0 6px; }
+
+    /* Typing indicator */
+    .hca-typing-row{display:flex;gap:8px;align-items:flex-end;margin:8px 0;}
+    .hca-typing-bubble{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:8px 12px;display:flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 2px 6px rgba(0,0,0,.15);}
+    .hca-typing-dot{width:6px;height:6px;border-radius:50%;background:#000;opacity:.4;animation:hcaBlink 1.4s infinite;}
+    .hca-typing-dot:nth-child(2){animation-delay:.2s;}
+    .hca-typing-dot:nth-child(3){animation-delay:.4s;}
+    @keyframes hcaBlink{0%,80%,100%{opacity:.4;transform:translateY(0);}40%{opacity:1;transform:translateY(-2px);} }
 
     @media (max-width:520px){ .hca-panel{ right:10px; left:10px; width:auto; height:70vh; } }
 
-    /* teaser hint bubble */
+    /* Hint bubble */
     .hca-hint{
       position:fixed; right:86px; bottom:30px; max-width:240px; background:#fff; color:#0f172a;
       border:1px solid #e5e7eb; border-radius:14px; padding:10px 12px; font:600 14px/1.35 Inter,system-ui;
       box-shadow:0 10px 30px rgba(0,0,0,.12); opacity:0; transform:translateY(8px);
       pointer-events:none; transition:opacity .2s ease, transform .2s ease; z-index:10001;
+      display:flex; align-items:flex-start; gap:8px;
     }
     .hca-hint.show{ opacity:1; transform:translateY(0); pointer-events:auto; }
     .hca-hint:after{
       content:""; position:absolute; right:-8px; bottom:12px; width:0; height:0;
       border-left:10px solid #fff; border-top:8px solid transparent; border-bottom:8px solid transparent;
     }
-    .hca-hint .hca-hint-close{ margin-left:8px; font-weight:900; cursor:pointer; opacity:.55; }
+    .hca-hint #hca-hint-text{ flex:1 1 auto; }
+    .hca-hint .hca-hint-close{ flex:0 0 auto; margin-left:2; font-weight:900; cursor:pointer; opacity:.55; }
     .hca-hint .hca-hint-close:hover{ opacity:1; }
+
+    /* Links visible in both bubbles */
+    .hca-bubble a{ text-decoration: underline; }
+    .hca-row.user .hca-bubble a{ color:#fff; }
   </style>
 
   <div class="hca-fab" aria-label="Open HCA Assistant" title="HCA Assistant">
@@ -128,7 +145,8 @@
   </div>
 
   <div class="hca-hint" id="hca-hint" role="status" aria-live="polite">
-    Need help with sewing solutions? I’m here. <span class="hca-hint-close" title="Dismiss">×</span>
+    <span id="hca-hint-text">Need help with sewing solutions? I’m here.</span>
+     <button type="button" class="hca-hint-close" title="Dismiss" aria-label="Dismiss">×</button>
   </div>
 
   <div class="hca-panel" role="dialog" aria-label="HCA Assistant">
@@ -144,7 +162,7 @@
     </div>
     <div class="hca-body" id="hca-log"></div>
     <div class="hca-foot">
-      <input class="hca-input" id="hca-input" placeholder="Ask something… (type /restart to refresh)"/>
+      <input class="hca-input" id="hca-input" placeholder="Ask something…"/>
       <button class="hca-send" id="hca-send">Send</button>
     </div>
   </div>
@@ -160,14 +178,20 @@
   const input = $("#hca-input");
   const sendBtn = $("#hca-send");
   const hint = $("#hca-hint");
+  const hintText = $("#hca-hint-text");
   const hintClose = hint.querySelector(".hca-hint-close");
 
   /* ---------- Icons ---------- */
   $("#hca-fab-icon").src  = window.HCA_BASE_ICON;
   $("#hca-head-icon").src = window.HCA_BASE_ICON;
 
-  /* ---------- First message ---------- */
-  appendMsg("Need help with sewing solutions? I'm here to assist you.", "bot");
+  /* ---------- Header session tag ---------- */
+  const titleEl = $("#hca-title");
+  if (titleEl) titleEl.textContent = "HCA Assistant";
+
+  /* ---------- First message (IST greeting) ---------- */
+  appendMsg(buildWelcomeLine(), "bot");
+  hintText.textContent = buildWelcomeLine();
 
   /* ---------- Hint logic ---------- */
   const USED_KEY = "hca_used_this_session";
@@ -199,21 +223,73 @@
   fab.onclick = () => togglePanel(true);
   closeBtn.onclick = () => { togglePanel(false); clearUsed(); scheduleHint(HINT_RESHOW_AFTER_CLOSE_MS); };
 
-  /* ---------- Minimal Markdown renderer (with real bullets) ---------- */
-  function escapeHtml(s){
-    return String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+  /* ---------- CONTACT AUTO-LINK HELPERS ---------- */
+  function addHttp(url){ return /^https?:\/\//i.test(url) ? url : `https://${url}`; }
+  function digits(s){ return String(s||"").replace(/[^\d]/g,""); }
+  function telHref(s){ return `tel:${digits(s)}`; }
+  function waHref(s){
+    let n = digits(s);
+    if (n.length <= 10) n = "91" + n; // assume local Indian number -> +91
+    return `https://wa.me/${n}`;
   }
 
+  /* ---------- Minimal Markdown renderer with SAFE autolinking ---------- */
   function renderMarkdown(input){
+    const escapeHtml = (s) =>
+      String(s).replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+
     const text = escapeHtml(input).replace(/\r\n/g, "\n");
+
     const inline = (s) => {
-      s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+      // Normalize visible wa.me URLs -> clean label// Explicit Call/Phone labels (not inside a tag)
+      s = s.replace(
+        /(?![^<]*>)(Call|Phone|Mobile|Number|Tel(?:ephone)?)\s*[:\-]?\s*([+]?[\d\s().-]{6,}\d)/gi,
+        (_m, label, num) =>
+          `<a href="${telHref(num)}" target="_blank" rel="noopener">${label}: ${num.replace(/\s+/g, " ").trim()}</a>`
+      );
+      s = s.replace(
+        /(?![^<]*>)(?:https?:\/\/)?wa\.me\/(\d{6,})/gi,
+        (_m, num) => `<a href="https://wa.me/${num}" target="_blank" rel="noopener">WhatsApp</a>`
+      );
+
+      // Markdown links
+      s = s.replace(
+        /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+        '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+      );
+
+      // Emails (not inside a tag)
+      s = s.replace(
+        /(?![^<]*>)([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g,
+        '<a href="mailto:$1" target="_blank" rel="noopener">$1</a>'
+      );
+
+      // Explicit WhatsApp labels (not inside a tag)
+      s = s.replace(
+        /(?![^<]*>)(WhatsApp|Whatsapp|WA)\s*[:\-]?\s*([+]?[\d\s().-]{6,}\d)/gi,
+        (_m, _w, num) => `<a href="${waHref(num)}" target="_blank" rel="noopener">WhatsApp: ${num.replace(/\s+/g," ").trim()}</a>`
+      );
+
+      // Generic phone numbers (not inside a tag)
+      s = s.replace(
+        /(?![^<]*>)(?<!\w)(\+?[\d][\d\s().-]{6,}\d)(?!\w)/g,
+        (m) => `<a href="${telHref(m)}" target="_blank" rel="noopener">${m}</a>`
+      );
+
+      // Bare URLs (not inside a tag)
+      s = s.replace(
+        /(?![^<]*>)(\b(?:https?:\/\/|www\.)[^\s<)]+[^\s<).,!?:;])/gi,
+        (m) => `<a href="${addHttp(m)}" target="_blank" rel="noopener">${m.replace(/^https?:\/\//i,'')}</a>`
+      );
+
+      // Code / bold / italics
       s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
       s = s.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
       s = s.replace(/(^|[\s(])\*([^*\n]+)\*(?=[\s).,!?:;]|$)/g, '$1<em>$2</em>');
       return s;
     };
 
+    // Blocks + simple lists
     const lines = text.split("\n");
     let html = "", inList = false;
     const closeList = () => { if(inList){ html += "</ul>"; inList = false; } };
@@ -240,8 +316,8 @@
 
     const bubble = document.createElement("div");
     bubble.className = "hca-bubble";
-    if (who === "bot"){ bubble.innerHTML = renderMarkdown(text); }
-    else { bubble.textContent = text; }
+    // Use HTML for both bot and user so contact details are clickable
+    bubble.innerHTML = renderMarkdown(text);
 
     row.appendChild(avatar);
     row.appendChild(bubble);
@@ -250,31 +326,33 @@
     return bubble;
   }
 
-  let typingEl = null;
+  /* ---------- Typing indicator ---------- */
+  let typingEl=null;
   function showTyping(show){
     if(show){
       if(typingEl) return;
-      typingEl = document.createElement("div");
-      typingEl.className = "hca-typing";
-      typingEl.textContent = "Thinking...";
-      log.appendChild(typingEl);
-      log.scrollTop = log.scrollHeight;
-    } else if(typingEl){
-      typingEl.remove(); typingEl = null;
-    }
+      const row=document.createElement("div");
+      row.className="hca-row bot hca-typing-row";
+      const avatar=document.createElement("div");
+      avatar.className="hca-avatar";
+      avatar.style.backgroundImage=`url('${window.HCA_BOT_ICON}')`;
+      const bubble=document.createElement("div");
+      bubble.className="hca-typing-bubble";
+      for(let i=0;i<3;i++){const d=document.createElement("span");d.className="hca-typing-dot";bubble.appendChild(d);}
+      row.appendChild(avatar);row.appendChild(bubble);
+      typingEl=row;log.appendChild(typingEl);log.scrollTop=log.scrollHeight;
+    }else if(typingEl){typingEl.remove();typingEl=null;}
   }
 
   async function resetChat(){
     log.innerHTML = "";
-    appendMsg("Need help with sewing solutions? I'm here to assist you.", "bot");
+    appendMsg(buildWelcomeLine(), "bot");
 
-    // Clear local history (if any)
     try{
       localStorage.removeItem("hca_history");
       sessionStorage.removeItem("hca_history");
     }catch(_){}
 
-    // Ask server to clear THIS session's history (if endpoint exists)
     try{
       await fetch(RESET, {
         method: "POST",
@@ -315,8 +393,7 @@
           "Content-Type":"application/json",
           "X-Session-ID": SESSION_ID
         },
-        credentials: "include", // allow server to set/read cookie if it wants
-        // Keep your existing payload key "question" but include sessionId too
+        credentials: "include",
         body: JSON.stringify({ question: q, sessionId: SESSION_ID })
       });
 
@@ -351,6 +428,5 @@
     .then(r=>r.json())
     .then(j=>console.log("HCA Assistant:", j))
     .catch(()=>{});
-
 })();
 </script>

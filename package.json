@@ -2,20 +2,37 @@
   "name": "hca-chatbot",
   "private": true,
   "type": "module",
-  "engines": { "node": "20.x" },
+  "engines": {
+    "node": "20.x"
+  },
   "scripts": {
+    "dev": "vercel dev",
     "start": "node server.mjs",
-    "dev": "nodemon --watch server.mjs server.mjs"
+    "dev:api": "node server.mjs",
+    "dev:ui": "vite --port 5173",
+    "dev:both": "concurrently -k -n UI,API -c blue,green \"vite --port 5173\" \"cross-env PORT=5174 node server.mjs\"",
+    "embed": "node scripts/embed.mjs",
+    "embed:watch": "nodemon --ext json,md,txt --watch data --exec \"node scripts/embed.mjs\"",
+    "build": "echo \"no build step\""
   },
   "dependencies": {
-    "@google/generative-ai": "0.21.0",
-    "cookie-parser": "^1.4.6",
+    "@google/generative-ai": "^0.21.0",
+    "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
-    "dotenv": "^16.4.5",
+    "dotenv": "^16.6.1",
     "express": "^4.19.2",
+    "express-rate-limit": "^8.1.0",
+    "helmet": "^8.1.0",
+    "pdf-parse": "^2.2.6",
+    "pino": "^10.0.0",
+    "pino-http": "^11.0.0",
     "uuid": "^9.0.1"
   },
   "devDependencies": {
-    "nodemon": "^3.0.1"
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "nodemon": "^3.1.4",
+    "vercel": "^39.0.0",
+    "vite": "^5.4.0"
   }
 }

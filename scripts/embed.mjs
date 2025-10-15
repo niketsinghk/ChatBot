@@ -1,33 +1,67 @@
-import "dotenv/config";
-import fs from "fs";
-import path from "path";
-import pdfParse from "pdf-parse";
+// embed.mjs — PDF embedding (knowledge.pdf, HCA.pdf)
+
+/* ===================== Imports ===================== */
+import path from "node:path";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
+import dotenv from "dotenv";
 import { GoogleGenerativeAI } from "@google/generative-ai";
-import { fileURLToPath } from "url";
 
+// CJS import of pdf-parse (do NOT add any other pdf-parse import)
+import { createRequire } from "node:module";
+const require = createRequire(import.meta.url);
+const pdfParseModule = require("pdf-parse");
+const pdfParse = typeof pdfParseModule === "function"
+  ? pdfParseModule
+  : pdfParseModule.default;
+
+/* ===================== Env Bootstrap ===================== */
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
-const DATA_DIR = path.resolve(__dirname, "..", "data");
+// Always load .env from project ROOT (../.env), even when running inside /scripts
+const ENV_PATH = path.resolve(__dirname, "../.env");
+dotenv.config({ path: ENV_PATH });
 
-// Resolve PDF path: .env > default data/knowledge.pdf
-let PDF_PATH = process.env.PDF_PATH || path.join(DATA_DIR, "knowledge.pdf");
-// Normalize for Windows (prefer forward slashes)
-PDF_PATH = PDF_PATH.replace(/\\+/g, "/");
+// Be flexible with env var names
+const API_KEY =
+  process.env.GOOGLE_API_KEY ||
+  process.env.GEMINI_API_KEY ||
+  process.env.GENAI_API_KEY;
 
-const OUT_PATH = path.join(DATA_DIR, "index.json");
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "text-embedding-004";
-const CHUNK_SIZE = parseInt(process.env.CHUNK_SIZE || "1200", 10);
-const CHUNK_OVERLAP = parseInt(process.env.CHUNK_OVERLAP || "200", 10);
-
-if (!process.env.GOOGLE_API_KEY) {
-  console.error("❌ Missing GOOGLE_API_KEY in .env");
+if (!API_KEY) {
+  console.error("❌ Missing GOOGLE_API_KEY (or GEMINI_API_KEY/GENAI_API_KEY) in:", ENV_PATH);
   process.exit(1);
 }
 
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+console.log("📄 Using .env: ", ENV_PATH);
+console.log("🔑 API key set:", "yes");
+
+/* ===================== Paths & Config ===================== */
+const DATA_DIR = path.resolve(__dirname, "..", "data");
+
+// PDFs (env overrides). Defaults keep your old behavior.
+let PDF_PATH       = process.env.PDF_PATH       || path.join(DATA_DIR, "knowledge.pdf");
+let HCA_PDF_PATH   = process.env.HCA_PDF_PATH   || path.join(DATA_DIR, "HCA.pdf");
+
+// Normalize for Windows (prefer forward slashes)
+PDF_PATH       = String(PDF_PATH).replace(/\\+/g, "/");
+HCA_PDF_PATH   = String(HCA_PDF_PATH).replace(/\\+/g, "/");
+
+// Output embedding index
+const OUT_PATH = process.env.OUT_PATH || path.join(DATA_DIR, "index.json");
+
+// Embedding params
+const GENERATION_MODEL = process.env.GENERATION_MODEL || "gemini-2.5-flash";
+const EMBEDDING_MODEL  = process.env.EMBEDDING_MODEL  || "text-embedding-004";
+const CHUNK_SIZE       = parseInt(process.env.CHUNK_SIZE      || "1200", 10);
+const CHUNK_OVERLAP    = parseInt(process.env.CHUNK_OVERLAP   || "200", 10);
+
+/* ===================== Client ===================== */
+const genAI    = new GoogleGenerativeAI(API_KEY);
 const embedder = genAI.getGenerativeModel({ model: EMBEDDING_MODEL });
 
+/* ===================== Utilities ===================== */
 function chunkText(text, size, overlap) {
   const chunks = [];
   let start = 0;
@@ -79,8 +113,9 @@ const HINDI_STOPWORDS = new Set([
 ]);
 
 const PROTECTED_TOKENS = new Set([
-  "hca","hari","chand","anand","anil","anand","duke","kansai","special","highlead","merrow","megasew","amf","reece",
-  "delhi","india","solution","solutions","automation","garment","leather","mattress"
+  "hca","hari","chand","anand","anil","duke","kansai","special","highlead","merrow","megasew","amf","reece",
+  "delhi","india","solution","solutions","automation","garment","leather","mattress","dukejia","vios","jia",
+  "pattern","sewing","embroidery","perforation","quilting","upholstery","fk","group","bangladesh","ethiopia"
 ]);
 
 function cleanForEmbedding(s) {
@@ -98,67 +133,126 @@ function cleanForEmbedding(s) {
   return kept.join(" ").trim();
 }
 
+/* ===================== Loaders ===================== */
+async function readPdfText(filePath) {
+  if (!filePath) return { ok: false, why: "no path" };
+  if (!fs.existsSync(filePath)) return { ok: false, why: "missing", filePath };
+  const buf = fs.readFileSync(filePath);
+  if (!buf || !buf.length) return { ok: false, why: "empty", filePath };
+  const parsed = await pdfParse(buf);
+  const text = (parsed.text || "")
+    .replace(/\r/g, "")
+    .replace(/\n{2,}/g, "\n\n")
+    .trim();
+  return { ok: true, text, filePath };
+}
+
+/* ===================== Runner ===================== */
 async function main() {
-  console.log("📂 CWD:", process.cwd());
-  console.log("📂 DATA_DIR:", DATA_DIR);
-  console.log("📄 PDF_PATH:", PDF_PATH);
-  console.log("💾 OUT_PATH:", OUT_PATH);
+  console.log("📂 CWD:        ", process.cwd());
+  console.log("📂 DATA_DIR:   ", DATA_DIR);
+  console.log("📄 PDF_PATH:   ", PDF_PATH);
+  console.log("📄 HCA_PDF:    ", HCA_PDF_PATH);
+  console.log("📦 OUT_PATH:   ", OUT_PATH);
+  console.log("🧩 CHUNK_SIZE/OVERLAP:", CHUNK_SIZE, CHUNK_OVERLAP);
+  console.log("🧠 MODEL(emb): ", EMBEDDING_MODEL);
 
-  if (!fs.existsSync(PDF_PATH)) {
-    console.error("❌ PDF not found at:", PDF_PATH);
-    console.error("👉 Place file at data/knowledge.pdf OR set PDF_PATH in .env (use forward slashes).");
+  // Collect sources (each optional; we gracefully skip if missing)
+  const sources = [];
+
+  // 1) Main PDF (knowledge.pdf or env override)
+  const mainPdf = await readPdfText(PDF_PATH);
+  if (mainPdf.ok) {
+    sources.push({ kind: "pdf", name: path.basename(PDF_PATH), text: mainPdf.text });
+    console.log("✅ Loaded:", path.basename(PDF_PATH));
+  } else {
+    console.log("⚠️ Skipped main PDF:", mainPdf.why, mainPdf.filePath || "");
+  }
+
+  // 2) HCA company PDF
+  const hcaPdf = await readPdfText(HCA_PDF_PATH);
+  if (hcaPdf.ok) {
+    sources.push({ kind: "pdf", name: path.basename(HCA_PDF_PATH), text: hcaPdf.text });
+    console.log("✅ Loaded:", path.basename(HCA_PDF_PATH));
+  } else {
+    console.log("⚠️ Skipped HCA PDF:", hcaPdf.why, hcaPdf.filePath || "");
+  }
+
+  // 3) Optional model list PDF (won't block if missing)
+  const modelPdf = await readPdfText(MODEL_PDF_PATH);
+  if (modelPdf.ok) {
+    sources.push({ kind: "pdf", name: path.basename(MODEL_PDF_PATH), text: modelPdf.text });
+    console.log("✅ Loaded:", path.basename(MODEL_PDF_PATH));
+  } else {
+    console.log("⚠️ Skipped model list PDF:", modelPdf.why, modelPdf.filePath || "");
+  }
+
+  if (sources.length === 0) {
+    console.error("❌ No PDF sources found. Provide at least one of: PDF_PATH, HCA_PDF_PATH");
     process.exit(1);
   }
 
-  // Read as BUFFER — so pdf-parse never tries its test PDF
-  const pdfBuffer = fs.readFileSync(PDF_PATH);
-  if (!pdfBuffer || !pdfBuffer.length) {
-    console.error("❌ Could not read PDF (buffer empty). Check file permissions/path.");
-    process.exit(1);
+  console.log("✂️  Chunking sources…");
+  const allChunks = [];
+  for (const src of sources) {
+    const chunks = chunkText(src.text, CHUNK_SIZE, CHUNK_OVERLAP);
+    chunks.forEach((c, idx) => {
+      allChunks.push({
+        source: src.name,
+        kind: src.kind,
+        chunk_index: idx,
+        text_original: c
+      });
+    });
+    console.log(`   • ${src.name}: ${chunks.length} chunks`);
   }
 
-  const parsed = await pdfParse(pdfBuffer);
-  const text = parsed.text.replace(/\r/g, "").replace(/\n{2,}/g, "\n\n").trim();
-
-  console.log("✂️  Chunking…");
-  const chunks = chunkText(text, CHUNK_SIZE, CHUNK_OVERLAP);
-
-  console.log(`🧠 Embedding ${chunks.length} chunks (EN+Hinglish+Hindi stopwords)…`);
+  console.log(`🧠 Embedding ${allChunks.length} chunks (EN+Hinglish+Hindi stopwords)…`);
   const batchSize = 64;
   const vectors = [];
 
-  for (let i = 0; i < chunks.length; i += batchSize) {
-    const batchOriginal = chunks.slice(i, i + batchSize);
-    const batchCleaned = batchOriginal.map(c => cleanForEmbedding(c));
+  for (let i = 0; i < allChunks.length; i += batchSize) {
+    const batch = allChunks.slice(i, i + batchSize);
+
+    const cleaned = batch.map(b => cleanForEmbedding(b.text_original) || " ");
     const res = await embedder.batchEmbedContents({
-      requests: batchCleaned.map((c) => ({
-        content: { parts: [{ text: c || " " }] }
+      requests: cleaned.map(text => ({
+        content: { parts: [{ text }] }
       }))
     });
 
-    // NOTE: result field is `embeddings` (array) with `.values`
-    const batchVectors = res.embeddings.map((e, j) => ({
-      id: i + j,
-      text_original: batchOriginal[j],
-      text_cleaned: batchCleaned[j],
-      embedding: e.values
-    }));
-
-    vectors.push(...batchVectors);
-    console.log(`   → ${Math.min(i + batchSize, chunks.length)}/${chunks.length}`);
+    const emb = res.embeddings || [];
+    for (let j = 0; j < emb.length; j++) {
+      const src = batch[j];
+      vectors.push({
+        id: i + j,
+        source: src.source,
+        kind: src.kind,
+        chunk_index: src.chunk_index,
+        text_original: src.text_original,
+        text_cleaned: cleaned[j],
+        embedding: emb[j].values
+      });
+    }
+    console.log(`   → ${Math.min(i + batchSize, allChunks.length)}/${allChunks.length}`);
   }
 
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
-  fs.writeFileSync(
-    OUT_PATH,
-    JSON.stringify({
-      createdAt: new Date().toISOString(),
-      model: EMBEDDING_MODEL,
-      stopwords: "EN+Hinglish+Hindi",
-      vectors
-    }, null, 2)
-  );
+  const payload = {
+    createdAt: new Date().toISOString(),
+    model: EMBEDDING_MODEL,
+    generation_model: GENERATION_MODEL,
+    stopwords: "EN+Hinglish+Hindi",
+    meta: {
+      sources: sources.map(s => ({ name: s.name, kind: s.kind })),
+      chunk_size: CHUNK_SIZE,
+      chunk_overlap: CHUNK_OVERLAP
+    },
+    vectors
+  };
+  fs.writeFileSync(OUT_PATH, JSON.stringify(payload, null, 2));
   console.log("✅ Saved embeddings to:", OUT_PATH);
+  console.log(`📊 Total vectors: ${vectors.length}`);
 }
 
 main().catch((err) => {

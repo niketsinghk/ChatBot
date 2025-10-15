@@ -9,55 +9,86 @@ import { v4 as uuidv4 } from "uuid";
 import { GoogleGenerativeAI } from "@google/generative-ai";
 import { fileURLToPath } from "url";
 
+/* ─────────────────────────── Paths & Config ─────────────────────────── */
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
-/* ===================== Config ===================== */
-const PORT = parseInt(process.env.PORT || "5173", 10);
-const DATA_DIR = path.join(__dirname, "data");
-const EMB_PATH = path.join(DATA_DIR, "index.json");
-const TOP_K = parseInt(process.env.TOP_K || "6", 10);
+const PORT         = parseInt(process.env.PORT || "5173", 10);
+const TOP_K        = parseInt(process.env.TOP_K || "6", 10);
+const DATA_DIR     = path.join(__dirname, "data");
+const EMB_PATH     = path.join(DATA_DIR, "index.json");
+const PDF_PATH     = path.join(DATA_DIR, "knowledge.pdf");
+const HCA_PDF_PATH = path.join(DATA_DIR, "HCA.pdf");
 
 const GENERATION_MODEL = process.env.GENERATION_MODEL || "gemini-2.5-flash";
-const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || "text-embedding-004";
+const EMBEDDING_MODEL  = process.env.EMBEDDING_MODEL  || "text-embedding-004";
 
 if (!process.env.GOOGLE_API_KEY) {
   console.error("❌ Missing GOOGLE_API_KEY in .env");
   process.exit(1);
 }
 
-/* ===================== App ===================== */
+/* ───────────────────────────── Express App ───────────────────────────── */
 const app = express();
+app.set("trust proxy", 1);
+
 app.use(
   cors({
-    origin: true,          // set to your frontend origin(s) in prod
+    origin: true,               // In prod: ['https://your-site.com', ...]
     credentials: true,
   })
 );
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: "4mb" }));
 app.use(cookieParser());
 
-// Static UI
+// Static files (optional)
 app.use(express.static(path.join(__dirname, "public")));
 app.use("/images", express.static(path.join(__dirname, "images")));
 
-/* ===================== Gemini ===================== */
-const genAI = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
+/* ─────────────────────────── Google Gemini SDK ───────────────────────── */
+const genAI    = new GoogleGenerativeAI(process.env.GOOGLE_API_KEY);
 const embedder = genAI.getGenerativeModel({ model: EMBEDDING_MODEL });
-const llm = genAI.getGenerativeModel({ model: GENERATION_MODEL });
+const llm      = genAI.getGenerativeModel({ model: GENERATION_MODEL });
 
-/* ===================== Session Store ===================== */
-const sessions = new Map(); // sid -> { history: [], createdAt, lastSeen }
+/* ─────────────────────────── In-Memory Sessions ──────────────────────── */
+const sessions = new Map(); // sid -> { history:[], createdAt, lastSeen, hits }
 
+/** Time-of-day greeting in IST */
+function getISTGreeting(now = new Date()) {
+  const hour = Number(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Kolkata",
+      hour: "2-digit",
+      hour12: false,
+    }).format(now)
+  );
+  if (hour < 5)  return "Good night";
+  if (hour < 12) return "Good morning";
+  if (hour < 17) return "Good afternoon";
+  if (hour < 21) return "Good evening";
+  return "Good night";
+}
+
+/** Legacy local greeting (kept for small-talk templates if you want it) */
 function getTimeOfDayGreeting() {
   const h = new Date().getHours();
-  if (h < 5) return "Good night";
+  if (h < 5)  return "Good night";
   if (h < 12) return "Good morning";
   if (h < 17) return "Good afternoon";
   if (h < 21) return "Good evening";
   return "Hello";
 }
 
+/** Build first-turn greeting line in the detected mode */
+function buildGreeting(mode) {
+  const base = getISTGreeting();
+  if (mode === "hinglish") {
+    return `${base}! Main HCA Assistant hoon — HCA, Duke & Duke-Jia (machines, spares, automation) mein madad karta hoon.`;
+  }
+  return `${base}! I’m HCA Assistant — here to help with HCA, Duke & Duke-Jia machines, spares, and automation.`;
+}
+
+/** Attach or create session, echo X-Session-ID for debugging */
 function sessionMiddleware(req, res, next) {
   let sid = req.get("X-Session-ID") || req.body?.sessionId || req.cookies?.sid;
   if (!sid || typeof sid !== "string" || sid.length > 200) {
@@ -69,24 +100,29 @@ function sessionMiddleware(req, res, next) {
       maxAge: 1000 * 60 * 60 * 24 * 30,
     });
   }
+  res.setHeader("X-Session-ID", sid);
+
   const now = Date.now();
-  if (!sessions.has(sid)) sessions.set(sid, { history: [], createdAt: now, lastSeen: now });
-  else sessions.get(sid).lastSeen = now;
+  if (!sessions.has(sid)) {
+    sessions.set(sid, { history: [], createdAt: now, lastSeen: now, hits: 0 });
+  } else {
+    sessions.get(sid).lastSeen = now;
+  }
+  sessions.get(sid).hits += 1;
 
   req.sid = sid;
   req.session = sessions.get(sid);
   next();
 }
 
-/* ===================== Language Mode ===================== */
+/* ───────────────────── Language Mode (EN / Hinglish) ─────────────────── */
 function detectResponseMode(q) {
   const text = (q || "").toLowerCase();
   if (/[\u0900-\u097F]/.test(text)) return "hinglish";
   const hinglishTokens = [
-    "hai","hain","tha","thi","the","kya","kyu","kyun","kyunki","kisi","kis",
-    "kaun","kab","kaha","kahaan","kaise","nahi","nahin","ka","ki","ke","mein","me","mai","mei",
-    "hum","ap","aap","tum","kr","kar","karo","karna","chahiye","bhi","sirf","jaldi","kitna",
-    "ho","hoga","hogaya","krdo","pls","plz","yaar","shukriya","dhanyavaad","dhanyavad"
+    "hai","hain","tha","thi","the","kya","kyu","kyun","kyunki","kisi","kis","kaun","kab","kaha","kahaan","kaise",
+    "nahi","nahin","ka","ki","ke","mein","me","mai","mei","hum","ap","aap","tum","kr","kar","karo","karna","chahiye",
+    "bhi","sirf","jaldi","kitna","ho","hoga","hogaya","krdo","pls","plz","yaar","shukriya","dhanyavaad","dhanyavad"
   ];
   let score = 0;
   for (const t of hinglishTokens) {
@@ -97,7 +133,7 @@ function detectResponseMode(q) {
   return score >= 2 ? "hinglish" : "english";
 }
 
-/* ===================== Stopwords & Cleaner ===================== */
+/* ───────────────────── Stopwords / Cleaner for Embeds ────────────────── */
 const EN_STOPWORDS = new Set(`a about above after again against all am an and any are aren't as at
 be because been before being below between both but by
 can't cannot could couldn't did didn't do does doesn't doing don't down during
@@ -133,13 +169,14 @@ const HINDI_STOPWORDS = new Set([
 ]);
 
 const PROTECTED_TOKENS = new Set([
-  "hca","hari","chand","anand","anil","anand","duke","kansai","special","highlead","merrow","megasew","amf","reece","delhi","india","solution","solutions","automation","garment","leather","mattress"
+  "hca","hari","chand","anand","anil","duke","duke-jia","kansai","special","highlead","merrow","megasew","amf","reece",
+  "delhi","india","solution","solutions","automation","garment","leather","mattress","perforation","embroidery","vios","dukejia"
 ]);
 
 function cleanForEmbedding(s) {
   if (!s) return "";
   const lower = s.toLowerCase();
-  const stripped = lower.replace(/[^a-z0-9\u0900-\u097F\s]/g, " ");
+  const stripped = lower.replace(/[^a-z0-9\u0900-\u097F\s-]/g, " ");
   const tokens = stripped.split(/\s+/).filter(Boolean);
   const kept = tokens.filter((t) => {
     if (PROTECTED_TOKENS.has(t)) return true;
@@ -151,48 +188,63 @@ function cleanForEmbedding(s) {
   return kept.join(" ").trim();
 }
 
-/* ===================== Vectors ===================== */
+/* ────────────────────────── Embeddings (RAG) ─────────────────────────── */
 function cosineSim(a, b) {
   let dot = 0, na = 0, nb = 0;
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
   return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
 }
+
 function loadVectors() {
   if (!fs.existsSync(EMB_PATH)) throw new Error(`Embeddings not found at ${EMB_PATH}. Run "npm run embed" first.`);
   const raw = JSON.parse(fs.readFileSync(EMB_PATH, "utf8"));
   if (!raw?.vectors?.length) throw new Error("Embeddings file has no vectors.");
   return raw.vectors;
 }
+
 let VECTORS = [];
 try {
   VECTORS = loadVectors();
-  console.log(`🗂️  Loaded ${VECTORS.length} vectors (stopwords: EN+Hinglish+Hindi)`);
+  console.log(`🗂️  Loaded ${VECTORS.length} vectors (EN + Hinglish + Hindi stopwords)`);
 } catch (err) {
   console.warn("⚠️", err.message);
 }
 
-/* ===================== Small Talk ===================== */
+/* Optional: hot-reload vectors if file changes during dev */
+try {
+  fs.watch(EMB_PATH, { persistent: false }, () => {
+    try {
+      VECTORS = loadVectors();
+      console.log(`♻️  Reloaded ${VECTORS.length} vectors`);
+    } catch (e) {
+      console.warn("⚠️ Reload failed:", e?.message || e);
+    }
+  });
+} catch { /* ignore */ }
+
+/* ────────────────────────── Small Talk Replies ───────────────────────── */
 function makeSmallTalkReply(kind, mode) {
   const en = {
     hello: [
-      `${getTimeOfDayGreeting()}! 👋 I’m HCA’s assistant. Ask me anything about HCA (brands, machines, spares, etc.).`,
+      `${getTimeOfDayGreeting()}! 👋 I’m HCA’s assistant. Ask me anything about HCA (brands, machines, spares, service).`,
       `Hello! 👋 How can I help you with HCA today?`,
-      `Hi! 👋 I’m here for HCA queries—try “About HCA”, “Duke-Jia details”, or “Spares info”.`,
+      `Hi! 👋 Try “About Duke-Jia (Embroidery + Perforation)”, “Suggest a machine for leather belts”, or “Spares info”.`,
     ],
-    morning: [`Good morning! ☀️ How can I help with HCA today?`],
+    morning:   [`Good morning! ☀️ What can I help you with at HCA today?`],
     afternoon: [`Good afternoon! 😊 What would you like to know about HCA?`],
-    evening: [`Good evening! 🌙 Need help with HCA machines or spares?`],
+    evening:   [`Good evening! 🌙 Need help with machines or spares?`],
     thanks: [
       `You’re welcome! 🙏 Anything else I can do for you about HCA?`,
       `Happy to help! If you need more info, just ask. 🙂`,
+      `Anytime! If you want, I can also share brochures or connect you to sales.`,
     ],
     bye: [
       `Take care! 👋 If you need HCA help later, I’m here.`,
-      `Bye! Have a great day. 👋`,
+      `Bye! 👋 Have a great day.`,
     ],
     help: [
-      `I answer from HCA’s knowledge base. You can ask: “Which brands do we represent?”, “About Duke-Jia E+P flagship”, or “Industries we serve?”`,
+      ` Ask about brands we represent, Duke-Jia flagship, machine suggestions by application, or spares.`,
     ],
     ack: [
       `Got it! 👍 What would you like to ask about HCA next?`,
@@ -202,23 +254,23 @@ function makeSmallTalkReply(kind, mode) {
 
   const hi = {
     hello: [
-      `Namaste! 👋 HCA assistant bol raha hoon. HCA se related kuch bhi puchhiye (brands, machines, spares).`,
+      `Namaste! 👋 HCA Assistant bol raha hoon. HCA se related kuch bhi puchhiye (brands, machines, spares, service).`,
       `Hello ji! 👋 HCA ke baare mein madad chahiye?`,
-      `Hi! 👋 Aap HCA queries puchh sakte ho—“About HCA”, “Duke-Jia details”, “Spares info”.`,
+      `Hi! 👋 Try kariye: “Duke-Jia (Embroidery + Perforation) details”, “Leather belts ke liye kaunsi machine?”, “Spares info”.`,
     ],
-    morning: [`Good morning! ☀️ Aaj HCA mein kis cheez mein help chahiye?`],
+    morning:   [`Good morning! ☀️ Aaj HCA mein kis cheez mein help chahiye?`],
     afternoon: [`Good afternoon! 😊 HCA ke baare mein kya jaan’na chahoge?`],
-    evening: [`Good evening! 🌙 HCA machines/spares par madad chahiye to batayein.`],
+    evening:   [`Good evening! 🌙 HCA machines/spares par madad chahiye to batayein.`],
     thanks: [
       `Shukriya! 🙏 Aur kuch madad chahiye to pooch lijiye.`,
-      `Welcome ji! 🙂 Aur koi HCA info chahiye?`,
+      `Welcome ji! 🙂 Brochure chahiye ya sales connect karu?`,
     ],
     bye: [
       `Theek hai, milte hain! 👋 Jab chahein HCA help ke liye ping kar dijiyega.`,
       `Bye! 👋 Din shubh rahe.`,
     ],
     help: [
-      `Main HCA ke knowledge base se answer karta hoon. Aap pooch sakte ho: “Hum kin brands ko represent karte hain?”, “Duke-Jia E+P flagship kya hai?”, “Hum kaun-kaun si industries serve karte hain?”`,
+      `Main HCA ke knowledge base se answer karta hoon. Puchhiye: “Hum kin brands ko represent karte hain?”, “Duke-Jia E+P flagship”, “Application-wise machine suggestion”, “Spares”.`,
     ],
     ack: [
       `Thik hai! 👍 Ab HCA ke baare mein kya puchhna hai?`,
@@ -229,15 +281,15 @@ function makeSmallTalkReply(kind, mode) {
   const bank = mode === "hinglish" ? hi : en;
   const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
   switch (kind) {
-    case "hello": return pick(bank.hello);
-    case "morning": return pick(bank.morning);
+    case "hello":     return pick(bank.hello);
+    case "morning":   return pick(bank.morning);
     case "afternoon": return pick(bank.afternoon);
-    case "evening": return pick(bank.evening);
-    case "thanks": return pick(bank.thanks);
-    case "bye": return pick(bank.bye);
-    case "help": return pick(bank.help);
-    case "ack": return pick(bank.ack);
-    default: return pick(bank.hello);
+    case "evening":   return pick(bank.evening);
+    case "thanks":    return pick(bank.thanks);
+    case "bye":       return pick(bank.bye);
+    case "help":      return pick(bank.help);
+    case "ack":       return pick(bank.ack);
+    default:          return pick(bank.hello);
   }
 }
 
@@ -257,7 +309,8 @@ function smallTalkMatch(q) {
   return null;
 }
 
-/* ===================== Health & Utilities ===================== */
+
+/* ───────────────────────── Health & Utility APIs ─────────────────────── */
 app.get("/api/health", (_, res) => res.json({ ok: true, ts: Date.now() }));
 
 app.post("/api/reset", sessionMiddleware, (req, res) => {
@@ -271,13 +324,20 @@ app.get("/api/session", sessionMiddleware, (req, res) => {
     historyLength: req.session.history.length,
     createdAt: req.session.createdAt,
     lastSeen: req.session.lastSeen,
+    hits: req.session.hits,
   });
 });
 
-/* ===================== Ask ===================== */
+/* Optional: expose a light history (last N) for debugging */
+app.get("/api/history", sessionMiddleware, (req, res) => {
+  const n = Math.max(0, Math.min(100, parseInt(req.query.n || "20", 10)));
+  const last = req.session.history.slice(-n);
+  res.json({ sessionId: req.sid, items: last });
+});
+
+/* ───────────────────────────── Ask Endpoint ──────────────────────────── */
 app.post("/api/ask", sessionMiddleware, async (req, res) => {
   try {
-    // support both keys
     const question = (req.body?.question ?? req.body?.message ?? "").toString();
     if (!question || typeof question !== "string") {
       return res.status(400).json({ error: "Missing 'question' (or 'message') string" });
@@ -285,8 +345,16 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
 
     const q = question.trim();
     const mode = detectResponseMode(q);
+    const isFirstTurn = (req.session.history.length === 0);
 
-    // 1) intent-aware short-token guard
+    // decide if we should greet on the first turn:
+    // greet ONLY when the first user message is a greeting/blank,
+    // NOT when it's a real question.
+    const isBlank = q.replace(/[?.!\s]/g, "") === "";
+    const isGreetingWord = /^(hi+|hello+|hey( there)?|hlo+|namaste|namaskar|salaam|gm|ga|ge|👋|🙏)$/i.test(q.trim());
+    const shouldGreetFirstTurn = isFirstTurn && (isBlank || isGreetingWord);
+
+    // Quick single-token small talk (gm/ga/ge/hi/thanks/bye)
     const short = q.toLowerCase().trim().replace(/[^a-z]/g, "");
     const HELLO_SHORT  = new Set(["hi","hey","yo","sup"]);
     const BYE_SHORT    = new Set(["bye","bb","ciao","gn"]);
@@ -296,49 +364,69 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
     const GE_SHORT     = new Set(["ge"]);
 
     const quickKind =
-      (HELLO_SHORT.has(short) && "hello") ||
-      (BYE_SHORT.has(short)   && "bye")   ||
-      (THANKS_SHORT.has(short)&& "thanks")||
-      (GM_SHORT.has(short)    && "morning")||
-      (GA_SHORT.has(short)    && "afternoon")||
-      (GE_SHORT.has(short)    && "evening")||
+      (HELLO_SHORT.has(short)  && "hello")    ||
+      (BYE_SHORT.has(short)    && "bye")      ||
+      (THANKS_SHORT.has(short) && "thanks")   ||
+      (GM_SHORT.has(short)     && "morning")  ||
+      (GA_SHORT.has(short)     && "afternoon")||
+      (GE_SHORT.has(short)     && "evening")  ||
       null;
 
     if (quickKind) {
-      const reply = makeSmallTalkReply(quickKind, mode);
+      let reply = makeSmallTalkReply(quickKind, mode);
+      if (shouldGreetFirstTurn && ["hello","morning","afternoon","evening"].includes(quickKind)) {
+        const greet = buildGreeting(mode);
+        if (!/^\s*good\s+(morning|afternoon|evening|night)\b/i.test(reply)) {
+          reply = `${greet}\n\n${reply}`;
+        } else {
+          reply = `${greet}\n\n${reply.replace(/^[\s\S]*?\!?\s*/,"")}`;
+        }
+      }
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: reply, ts: Date.now() });
       return res.json({ answer: reply, reply, sessionId: req.sid, mode, citations: [] });
     }
 
-    // 2) regex small-talk detector
+    // Regex small-talk
     const kind = smallTalkMatch(q);
     if (kind) {
-      const reply = makeSmallTalkReply(kind, mode);
+      let reply = makeSmallTalkReply(kind, mode);
+      if (shouldGreetFirstTurn && ["hello","morning","afternoon","evening"].includes(kind)) {
+        const greet = buildGreeting(mode);
+        if (!/^\s*good\s+(morning|afternoon|evening|night)\b/i.test(reply)) {
+          reply = `${greet}\n\n${reply}`;
+        } else {
+          reply = `${greet}\n\n${reply.replace(/^[\s\S]*?\!?\s*/,"")}`;
+        }
+      }
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: reply, ts: Date.now() });
       return res.json({ answer: reply, reply, sessionId: req.sid, mode, citations: [] });
     }
 
-    // 3) RAG route
+    // RAG: require vectors
     if (!VECTORS.length) {
-      const fallback = mode === "hinglish"
+      let fallback = mode === "hinglish"
         ? "Embeddings load nahi hue. Pehle `npm run embed` chalaa kar knowledge base taiyaar kijiye."
         : "Embeddings are not loaded. Please run `npm run embed` to prepare the knowledge base.";
+      // ⬇️ do NOT prepend greeting here unless the first turn was just a greeting/blank
+      if (shouldGreetFirstTurn) fallback = `${buildGreeting(mode)}\n\n${fallback}`;
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: fallback, ts: Date.now() });
       return res.json({ answer: fallback, reply: fallback, sessionId: req.sid, mode, citations: [] });
     }
 
+    // Clean query → embed
     const cleanedQuery = cleanForEmbedding(q) || q.toLowerCase();
-
-    // Embed query
     const embRes = await embedder.embedContent({
       content: { parts: [{ text: cleanedQuery }] },
     });
-    const qVec = embRes?.embedding?.values || embRes?.embeddings?.[0]?.values || [];
+    const qVec =
+      embRes?.embedding?.values ||
+      embRes?.embeddings?.[0]?.values ||
+      [];
 
-    // Retrieve
+    // Retrieve top K by cosine
     const scored = VECTORS
       .map((v) => ({ ...v, score: cosineSim(qVec, v.embedding) }))
       .sort((a, b) => b.score - a.score)
@@ -346,14 +434,16 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
 
     const MIN_OK_SCORE = 0.18;
     if (scored.length === 0 || (scored?.[0]?.score ?? 0) < MIN_OK_SCORE) {
-      const tip = mode === "hinglish"
+      let tip = mode === "hinglish"
         ? "Is topic par knowledge base mein clear info nahi mil rahi. Thoda specific likhiye—jaise 'Duke-Jia E+P flagship features' ya 'Highlead 269 application'."
         : "I couldn’t find clear context in the knowledge base for that. Try being more specific—for example, 'Duke-Jia E+P flagship features' or 'Highlead 269 application'.";
+      if (shouldGreetFirstTurn) tip = `${buildGreeting(mode)}\n\n${tip}`;
       req.session.history.push({ role: "user", content: q, ts: Date.now() });
       req.session.history.push({ role: "assistant", content: tip, ts: Date.now() });
       return res.json({ answer: tip, reply: tip, sessionId: req.sid, mode, citations: [] });
     }
 
+    // Build contextual prompt
     const contextBlocks = scored
       .map((s, i) => `【${i + 1}】 ${s.text_original || s.text_cleaned || s.text}`)
       .join("\n\n");
@@ -364,7 +454,7 @@ app.post("/api/ask", sessionMiddleware, async (req, res) => {
         : `REPLY LANGUAGE: English. Professional and concise.`;
 
     const systemInstruction = `
-You are HCA's internal assistant. Answer STRICTLY and ONLY from the provided CONTEXT (the HCA knowledge.pdf).
+You are HCA's internal assistant. Answer STRICTLY and ONLY from the provided CONTEXT (the HCA knowledge base).
 If the answer is not present in the CONTEXT, reply exactly:
 "I don't have this information in the provided HCA knowledge base."
 
@@ -389,12 +479,22 @@ Format:
 - Use the reply language specified above.
 `.trim();
 
+    // Call LLM
     req.session.history.push({ role: "user", content: q, ts: Date.now() });
-
     const result = await llm.generateContent({
       contents: [{ role: "user", parts: [{ text: prompt }] }],
     });
-    const text = result.response.text();
+    let text = result.response.text();
+
+    // ⬇️ Prepend greeting ONLY if first message was greeting/blank
+    if (shouldGreetFirstTurn) {
+      const greet = buildGreeting(mode);
+      if (!/^\s*good\s+(morning|afternoon|evening|night)\b/i.test(text)) {
+        text = `${greet}\n\n${text}`;
+      } else {
+        text = `${greet}\n\n${text.replace(/^[\s\S]*?\!?\s*/,"")}`;
+      }
+    }
 
     req.session.history.push({ role: "assistant", content: text, ts: Date.now() });
 
@@ -408,7 +508,7 @@ Format:
   } catch (err) {
     console.error("Ask error:", err);
     const status = err?.status || 500;
-    const msg = err?.message || err?.statusText || "Generation failed";
+    const msg    = err?.message || err?.statusText || "Generation failed";
     res.status(status).json({
       error: msg,
       details: { status, statusText: err?.statusText || null, type: err?.name || null },
@@ -416,7 +516,8 @@ Format:
   }
 });
 
-/* ===================== Start ===================== */
+
+/* ───────────────────────────── Start Server ──────────────────────────── */
 app.listen(PORT, () => {
   console.log(`🚀 Server running on http://localhost:${PORT}`);
   console.log(`📎 Static UI at http://localhost:${PORT}/`);
